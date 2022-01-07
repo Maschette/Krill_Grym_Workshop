@@ -4,6 +4,7 @@ install.packages("remotes")
 install.packages("furrr")
 install.packages("rmarkdown", dependencies = T)
 install.packages("flextable")
+install.packages("tictoc")
 remotes::install_github("AustralianAntarcticDivision/Grym", dependencies = TRUE)
 
 #load needed packages to make sure they worked. 
@@ -16,4 +17,4 @@ library(furrr)
 library(readxl)
 library(Grym)
 library(flextable)
-
+library(tictoc)
