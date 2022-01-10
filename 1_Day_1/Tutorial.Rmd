@@ -1,0 +1,835 @@
+---
+title: "Grym Basics"
+author: "S. Wotherspoon & D. Maschette"
+date: "January 2022"
+output: html_document
+bibliography: Ref.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## Introduction
+
+Grym is a fisheries stock projection model that reproduces and extends the core functionality of the
+Generalized Yield Model (GYM) described in @GYM96.  Grym is an age structured, non-spatially explicit, single
+stock projection model.  Grim is not an estimation model - it does not estimate parameters describing
+the fishery from input data, any parameters describing the behaviour of the fishery must be
+estimated through some external process and provided to Grym directly.
+
+This document provides a tutorial introduction to the basic features provide by Grym.  We assume
+that the Grym is installed and loaded.
+```{r}
+library(Grym)
+```
+
+## Basic Model
+
+The original GYM projects stock abundance, biomass and yield forward over time by integrating a
+system of differential equations with an adaptive Runge-Kutta scheme. The GYM assumes the number
+\(N_{a,y}\), biomass \(B_{a,y}\) and yield \(Y_{a,y}\) of individuals of age \(a\) in year \(y\)
+satisfy the system of differential equations [@GYM96]
+\[
+\begin{align}
+\frac{dN_{a,y}}{dt} &= - \Big [ M_{y} m(a,t,y)  + F_{y} f(a,t,y) \Big ] N_{a,y}\\
+\frac{dB_{a,y}}{dt} &= w(a+t)\frac{dN_{a,y}}{dt} + N_{a,y}(t) \frac{dw(a+t)}{dt}\\
+\frac{dY_{a,y}}{dt} &= F_{y} f(a,t,y) B_{a,y}
+\end{align}
+\]
+where \(w(a+t)\) represents the weight at total age \(a+t\), and the total natural mortality
+\(M_{y} m(a,t,y) \) has been decomposed into an annually varying component \(M_{y}\) and a component
+\(m(a,t,y)\) that varies within years, and similarly the total fishing mortality \(F_{y} f(a,t,y) \)
+has been decomposed into an annual component \(F_{Y}\) and a component \(f(a,t,y)\) that varies
+within years. The total yield in each year is the sum of the contributions from each age class 
+\[
+Y_{y} = \sum_{a} Y_{a,y}(1).  
+\]
+
+The GYM solves this system of differential equations for each year by assuming the time varying
+functions \(m(a,t,y)\), \(f(a,t,y)\) and \(w(a+t)\) are piecewise linear, and integrating the system
+with an adaptive Runge-Kutta scheme.
+
+Grym takes a more direct approach. The system of differential equations has solution
+\[
+\begin{align}
+N_{a,y}(t) &= N_{a,y}(0)\exp \left [ - M_{y} \int_{y}^{y+t} m(a,\tau,y) d \tau  -  F_{y} \int_{y}^{y+t}f(a,\tau,y) d \tau\right ]\\
+B_{a,y}(t) &= w(a+t) N_{a,y}(t)\\
+Y_{a,y}(t) &= \int_{y}^{y+t}F_{y}f(a,\tau,y)B_{a,y}(\tau) d \tau.
+\end{align}
+\]
+Grym uses this solution directly, evaluating the required integrals by the composite trapezoidal
+rule.  If \(m(a,t,y)\) and \(f(a,t,y)\) are assumed piecewise linear, this yields exact solutions
+for \(N_{a,y}\) and \(B_{a,y}\).
+
+
+## Time Steps and Age Classes
+
+The model divides the stock into $m$ annual age classes.  The age classes must be sequential, but
+there is no requirement that the first class corresponds to age zero - individuals are not
+necessarily recruited to the modelled stock at birth.  The final age class may be a "plus" class
+representing an aggregation of the oldest age classes in the population.  For example, if 5 age
+classes are modelled and recruits enter the modelled population at age 3 and the final age class is
+a "plus" class, the age classes would represent the age ranges 3-4, 4-5, 5-6, 6-7 and 7+.
+
+Each year is divided into $n$ time steps, and the state of the stock is recorded at the $n+1$ time
+points bounding those time steps. For example, if the year is divided into 365 daily time steps, the
+state of the stock is recorded at 366 time points, with the first representing to midnight before
+the first day, the second representing midnight after the first day and so one, with the final time
+point representing the midnight on the final day of the year.
+
+Recruitment is assumed to occur instantaneously, and years are aligned in time so that recruitment
+occurs at the start of the the first time step.
+
+In the krill assessment, seven age classes are used, corresponding to age ranges 1-2, 2-3, 3-4, 4-5,
+5-6, 6-7 and 7-8, and each year is modelled as 365 daily time steps.  So the initial ages in each
+age class, and the time points through the year (in units of years) are
+```{r}
+## Age classes and time steps
+nsteps <- 365
+Ages <- 1:7
+Days <- seq(0,1,length=nsteps+1)
+```
+
+So the ages at which the stock is modelled are
+```{r}
+## Ages for which computations are performed
+ages <- outer(Days,Ages,FUN="+")
+head(ages)
+```
+This matrix acts as a table that gives the age of each age class at each time point in the year -
+each column corresponds to an age class, and each row a time point.  More precisely `ages[i,j]` is
+the age of an individual in age class `j` at time point `i` (that is, the beginning of time step
+`i`). Note that last entry in the second column corresponds to individuals that are age 3 in the
+final instant of the current year, and the first entry in the third column corresponds to
+individuals that are age 3 at the first instant of the current year.
+
+
+## Size
+
+To allow the model to translate between number of individuals and biomass, the analyst must specify
+the weight of an individual at each modelled age. This is done by providing a matrix `ws` that has
+the same dimensions as the `ages` matrix.  Again this matrix acts as a table that gives the weight
+of an individual for each age class and each time point in the year.
+
+It is common to calculate weight at age by first calculating length at age, and then computing
+weight from length, and Grym provides several functions to facilitate this.
+
+In the krill assessment, a punctuated von Bertalanffy growth model is used to estimate length at
+age, and then weight is determined from length through a simple power law.
+
+The `vonBertalanffyRAL` function computes length at age using a standard von Bertalanffy model
+assuming growth is restricted to the fraction of the year from `f0` to `f1`.  This produces a matrix
+of lengths that has the same dimensions as the `ages` matrix. Again this acts as table that gives
+the length of an individual for each age class and each time point in the year.
+```{r}
+## Table of length at age
+ls <- vonBertalanffyRAL(ages,t0=0,K=0.48,Linf=60,f0=21/365,f1=135/365)
+head(ls)
+```
+Here von Bertalanffy growth occurs in the period from day 21 to day 135 of the year, and outside
+this period the length is assumed constant. The entry `ls[i,j]` give the length of an individual in
+age class `j` at time point `i`.
+
+We can visualize the growth pattern by plotting `ls` against `ages` 
+```{r}
+## Plot length at age
+plot(ages,ls,type="l",xlab="Age",ylab="Length")
+```
+
+The `powerLW` function computes weight from lengths using a standard power law. This produces a
+matrix that has the same dimensions as the `ages` and `ls` matrices, that tabulates the weight
+of an individual for each age class and each time point in the year.
+```{r}
+## Table of weight at age
+ws <- powerLW(ls,a=0.000004,b=3.2)
+head(ws)
+```
+Again the entry `ws[i,j]` is the weight of an individual in age class `j` at time point `i`.
+
+Plotting `ws` against `ls` shows a typical power law relationship
+```{r}
+## Plot length weight relationship 
+plot(ls,ws,type="l",xlab="Length",ylab="Weight")
+```
+
+while plotting `ws` against `ages` shows weight at age relationship induced by the punctuated growth
+```{r}
+## Plot weight at age
+plot(ages,ws,type="l",xlab="Age",ylab="Weight")
+```
+
+Strictly, to perform a projection the model only *requires* the matrix `ws` of weight at ages, and
+the analyst is free to compute this matrix by any means, the only requirement being that it has one
+entry for each age class and each time point in the year.  The matrices `ages` and `ls` are
+constructed purely for convenience.
+
+## Mortality
+
+The analyst must also provide several matrices that specify the fishing and natural mortality to be
+used in the projection. 
+
+The model decomposes both the fishing and natural mortalities into inter-annual and intra-annual
+components. So the fishing mortality is decomposed into an intra-annual component \(f(a,t,y)\) and
+an annual scaling \(F_{y}\) for that year. Similarly natural mortality is decomposed into the
+intra-annual component \(m(a,t,y)\) and an annual scaling \(M_{y}\).  For a projection over a
+single year, \(M_{y}\) and \(F_{y}\) are just constants, while the intra-annual components are stored
+as matrices.  The *unscaled* natural and fishing mortalities are the matrices
+
+* `fs` - a matrix representing the intra-annual component of fishing mortality \(f(a,t,y)\), and
+* `ms` - a matrix representing the intra-annual component of natural mortality \(m(a,t,y)\).
+
+Scaling these matrices by \(M_{y}\) and \(F_{y}\) yields the *scaled* natural and fishing mortalities:
+
+* `Ffs` - a matrix representing the total fishing mortality \(F_{y} f(a,t,y)\), and 
+* `Mms` - a matrix representing the total natural mortality \(M_{y} m(a,t,y)\).
+
+pending on the computation being performed, a number of additional quantities may be required. The
+*unscaled integrated* mortalities are the cumulative mortalities
+\[
+\int_{y}^{y+t} f(a,\tau,y) d \tau 
+\qquad \text{and} \qquad
+\int_{y}^{y+t} m(a,\tau,y) d \tau
+\] 
+and are represented by the matrices
+
+* `Fs` - a matrix representing the unscaled integrated fishing mortality, and
+* `Ms` - a matrix representing the unscaled integrated natural mortality,
+
+while the *scaled integrated* mortalities are
+\[
+F_{y} \int_{y}^{y+t} f(a,\tau,y) d \tau 
+\qquad \text{and} \qquad
+M_{y} \int_{y}^{y+t} m(a,\tau,y) d \tau
+\] 
+
+and are represented by the matrices
+
+* `FFs` - a matrix representing the scaled integrated fishing mortality, and
+* `MMs` - a matrix representing the scaled integrated natural mortality.
+
+All of the matrices described above have the same dimensions, with one column for each age class and
+one row for each time point.  Any scaled matrix can be obtained from its unscaled counterpart by
+multiplying by \(M_{y}\) and \(F_{y}\) as appropriate.  Any integrated quantity can be obtained from
+the corresponding non-integrated quantity with the `ctrapz` function, which implements the composite
+trapezoidal rule.
+
+For some computations only the integration over the full year is relevant, and only the final row of
+the integrated mortalities are required.  We define
+
+* `Fsf` and `Msf` are the final rows of the unscaled integrated mortalities, and
+* `FFsf` and `MMsf` are the final rows of the scaled integrated mortalities.
+
+The relationships between these quantities are summarized in the following diagram
+```{r,echo=FALSE}
+library(DiagrammeR)
+mermaid("
+graph TB
+  fs --> |ctrapz| Fs
+  fs --> |F| Ffs
+  Fs --> |F| FFs
+  Ffs --> |ctrapz| FFs
+  Fs --> |final| Fsf
+  FFs --> |final| FFsf
+  ms --> |ctrapz| Ms
+  ms --> |M| Mms
+  Ms --> |M| MMs
+  Mms --> |ctrapz| MMs
+  Ms --> |final| Msf
+  MMs --> |final| MMsf
+")
+```
+
+Typically, the unscaled fishing mortality `fs` is determined by the fishing season and the gear selectivity. 
+
+In the krill assessment, selectivity is a function of length. The `rampOgive` function constructs a
+"linear ramp" from 0 to 1 with a given width and midpoint 
+```{r}
+## Generate selectivity from length
+ss <- rampOgive(ls,32,12)
+head(ss)
+```
+Again, this matrix acts as a table that defines the selectivity for each age class and time point in
+the year, and we see that with these parameters, individuals of length less than 26mm are not
+selected and individuals of length greater than 38mm are fully selected.
+```{r}
+plot(ls,ss,type="l",xlab="Length",ylab="Selectivity")
+```
+
+In this example selectivity has been computed as function of length, but it could equally well be
+calculated from age or weight using any appropriate functional relationship.
+
+
+The selectivity is scaled by the distribution of effort within the year. If the fishing season spans
+the period from time point 31 to 200 within the year, we construct a vector that is zero for time
+points outside of the fishing season, and one at time points within
+```{r}
+fwy <- double(length=nsteps+1)
+fwy[31:200] <- 1
+```
+and then rescale this so that the cumulative effort over the year is one
+```{r}
+## Within year fishing pattern
+h <- 1/nsteps
+fwy <- fwy/trapz(fwy,h)
+```
+
+The unscaled fishing mortality is the product of the selectivity and the distribution of effort
+within the year
+```{r}
+## Unscaled fishing mortality
+fs <- fwy*ss
+```
+Again, this can be viewed as a table specifying the unscaled fishing effort for each age class and
+time point in the year.
+
+Plotting the unscaled fishing effort against age shows that individuals are only exposed to fishing
+within the fishing season, and very young individuals are only partially selected
+```{r}
+## Plot unscaled fishing mortality
+plot(ages,fs,type="l",xlab="Age",ylab="Mortality")
+```
+
+The unscaled integrated fishing mortality `Fs` is computed by integrating `fs` with `ctrapz`, and
+final row of the matrix is extracted with `final`
+```{r}
+## Unscaled integrated fishing mortality
+Fs <- ctrapz(fs,h)
+Fsf <- final(Fs)
+```
+This produces a table `Fs` of the cumulative (unscaled) fishing effort for each age class at each
+time point, and `Fsf` is simply the final row of this table, and corresponds to the total (unscaled)
+fishing effort expended in each age class.
+
+The corresponding scaled quantities are obtained by scaling by the annual fishing mortality.
+Suppose we choose $F=0.2$, then
+```{r}
+## Scaled fishing mortalities
+F <- 0.2
+Ffs <- F*fs
+FFs <- F*Fs
+FFsf <- F*Fsf
+```
+
+The calculation of the natural mortalities is similar.  It is common to assume natural mortality
+impacts all individuals of every age equally
+```{r}
+## Unscaled natural mortality
+ms <- matrix(1,nsteps+1,length(Ages))
+```
+
+If we also assume an annual scaling $M=0.1$, then we can calculate all the associated mortalities as
+```{r}
+## Scaled Fishing mortality
+M <- 0.1
+Mms <- M*ms
+## Integrated mortalities
+Ms <- ctrapz(ms,h)
+MMs <- ctrapz(Mms,h)
+Msf <- final(Ms)
+MMsf <- final(MMs)
+```
+
+## Projection
+
+The `project` function projects forward over a year when the annual scaling `F` of the fishing
+mortality is known.  
+
+We must provide an initial age structure - the number of individuals in each age class at the start
+of the year.  To illustrate, suppose the initial age structure is (this might be in units of
+millions of individuals)
+```{r}
+## Initial abundance
+N0 <- seq(1,by=-0.1,length=length(Ages))
+N0
+```
+
+We then project forward by calling `project` with the weight at age matrix, scaled natural and
+fishing mortalities and the initial age structure
+```{r}
+## Project forward one year when F is known
+pr <- project(ws, MMs, FFs, Ffs, N0)
+```
+This returns a list with elements
+
+* `N` the matrix of the projected abundance (number of individuals) for each age class and time point
+* `B` the matrix of the projected biomass for each age class and time point
+* `Y` the matrix of the projected yield (ie cumulative catch) for each age class and time point
+
+So for example, the matrix of project abundance has one column for each age class and one row for
+each time point, and the first row matches the initial age structure
+```{r}
+## Abundance
+head(pr$N)
+```
+
+Plotting the abundance of each age class over the year shows that the abundance can only
+decline, and the decline is more dramatic in the fishing season
+```{r}
+## Abundance in each age class over the year
+matplot(Days,pr$N,type="l",lty=1,xlab="Time",ylab="Abundance")
+```
+
+Plotting the biomass for each age class over the year shows although the abundance declines,
+the biomass of the stock can increase in the growth period 
+```{r}
+## Biomass in each age class over the year
+matplot(Days,pr$B,type="l",lty=1,xlab="Time",ylab="Biomass")
+```
+
+Plotting the yield shows the yield can only increase during the fishing season, and that the first
+age class is only weakly selected.
+```{r}
+## Yield in each age class over the year
+matplot(Days,pr$Y,type="l",lty=1,xlab="Time",ylab="Yield")
+```
+
+The final row of the yield gives the total catch from each age class
+```{r}
+## Annual catch in each age class
+final(pr$Y)
+```
+
+
+Often the annual scaling of fishing mortality is not known, but the total catch is.  The `projectC`
+function projects forward over a year when the total annual catch is known.  In the previous example,
+$F=0.2$ and the total annual catch was 
+```{r}
+## Total annual catch
+C <- sum(final(pr$Y))
+C
+```
+
+When the target catch is known we project forward by calling `projectC` with the weight at age
+matrix, scaled natural mortality, the *unscaled* fishing mortalities, the target catch and the initial
+age structure
+```{r}
+## Project forward when annual catch is known
+pr <- projectC(ws, MMs, Fs, fs, C, N0)
+```
+This the same projections of abundance, biomass and yield as before
+```{r}
+## Abundance, biomass and yield over the year
+opar <- par(mfrow=c(2,2))
+matplot(Days,pr$N,type="l",lty=1,xlab="Time",ylab="Abundance")
+matplot(Days,pr$B,type="l",lty=1,xlab="Time",ylab="Biomass")
+matplot(Days,pr$Y,type="l",lty=1,xlab="Time",ylab="Yield")
+par(opar)
+```
+together with an estimate of `F`
+```{r}
+## Estimated F
+pr$F
+```
+
+When the target catch is attainable, the projected total annual catch will match the prescribed target
+```{r}
+## Actual catch matches target
+sum(final(pr$Y))
+```
+
+But if the target catch is larger than the available biomass allows, the target is unattainable.
+When this occurs, `projectC` limits $F$ to an upper limit set by the argument `Fmax` and projects
+forward with this scaling
+```{r}
+## F is capped if target is unattainable
+pr1 <- projectC(ws, MMs, Fs, fs, 10, N0, Fmax=2.5)
+pr1$F
+```
+The target catch is not attained
+```{r}
+## Catch is below the target
+sum(final(pr1$Y))
+```
+and the stock becomes depleted to the point where fishing is ineffective
+```{r}
+## Stock is heavily depleted
+opar <- par(mfrow=c(2,2))
+matplot(Days,pr1$N,type="l",lty=1,xlab="Time",ylab="Abundance")
+matplot(Days,pr1$B,type="l",lty=1,xlab="Time",ylab="Biomass")
+matplot(Days,pr1$Y,type="l",lty=1,xlab="Time",ylab="Yield")
+par(opar)
+```
+When using `projectC` it is important to check if the target has been attained by checking that
+`pr$F < Fmax`.
+
+In the examples above, the projection is initialized by specifying the age structure at the
+beginning of the year, but both `project` and `projectC` offer more flexible initialization
+options. It is possible to specify the age structure at a time point other than the
+first with the `nref` argument
+```{r}
+## Set the abundance at time point 50
+pr1 <- project(ws, MMs, FFs, Ffs, N0, nref=50)
+pr1$N[50,]
+```
+It is also possible to treat the initializing abundance as a relative abundance and scale the
+total abundance to reproduce a specified total biomass at some (possibly different) time point.
+```{r}
+## Set the relative abundance at time point 50, and the total biomass at time point 80
+pr1 <- project(ws, MMs, FFs, Ffs, N0, nref=50, Bref=2, bref=80)
+pr1$N[50,]/pr1$N[50,1]
+sum(pr1$B[80,])
+```
+
+
+## Stock Summaries
+
+The functions `initial`, `final`, `meanStock`, `exploitableBiomass`, `vulnerableBiomass` and
+`spawningStock`  calculate useful summaries of stock state.
+
+The `initial` and `final` functions extract the first and last row of a matrix
+```{r}
+## Initial abundance
+initial(pr$N)
+## Final abundance
+final(pr$N)
+```
+
+The `meanStock` function calculates the mean abundance or biomass in each age class over a specified
+time interval.  To calculate mean abundance and biomass from time point 150 to time point 251
+```{r}
+## Monitoring period (time points)
+period <- 150:251
+## Mean abundance in each age class over the monitoring period
+meanStock(pr$N, period=period)
+## Mean biomass in each age class over the monitoring period
+meanStock(pr$B, period=period)
+```
+
+The `exploitableStock` function computes the mean abundance or biomass that is available to be
+exploited within in a given time period, and `vulnerableStock` computes the mean exploitable
+abundance or biomass weighted by fishing effort in the period.  
+
+To compute the exploitable and vulnerable biomass for the period from time point 150 to time point
+251
+```{r}
+## Monitoring period
+period <- 150:251
+## Exploitable biomass
+exploitableStock(pr$B, ss, period)
+## Vulnerable biomass
+vulnerableStock(pr$B,ss,fwy,period)
+```
+
+To determine the spawning stock at some interval, we must construct a matrix `gs` that defines the
+fraction of individuals that are mature for each age class and time point in the year
+```{r}
+## Generate maturity from length
+gs <- rampOgive(ls,36,6)
+head(gs)
+```
+As before this acts as a table that gives the maturity of each age class at each time point in the
+year.  For this example we have determined maturity as a function of length, but we could have
+calculated maturity as any appropriate function of age or weight.
+
+The `spawningStock` function computes the mean mature abundance or biomass over a specified period
+```{r}
+## Spawning stock abundance
+spawningStock(pr$N,gs,period=period)
+## Spawning stock biomass
+spawningStock(pr$B,gs,period=period)
+```
+
+## Multiple Year Projections
+
+Typically we will wish to project over multiple years.  The `advance` function can be used to
+generate the starting abundance for the next year given the projected abundance for the current year
+and the number of recruits. 
+
+Project over the first year
+```{r}
+## Target catch
+C <- 1
+## Initial abundance
+N0 <- seq(1,by=-0.1,length=length(Ages))
+## Project forward first year
+pr <- projectC(ws, MMs, Fs, fs, C, N0)
+## Final abundance
+final(pr$N)
+```
+At this point in the script we would record appropriate summaries from the projection.
+
+The `advance` function is then used to generate the initial abundance for the next year by
+progressing each age class by one year and inserting the recruits in the first age class
+```{r}
+## Number of recruits
+R <- 1.1
+## Advance individuals to next age class
+N0 <- advance(pr$N,R)
+N0
+```
+and these abundances are used to initialize the next projection.
+
+We may allow any of the model parameters to vary from year to year, and so it may be necessary to
+recalculate the input matrices before performing the next projection
+```{r}
+## Project forward second year
+pr <- projectC(ws, MMs, Fs, fs, C, N0)
+```
+
+## Initial Age Structure
+
+The `ageStructureS` and `ageStructureD` functions generate initial age structures from which to
+start the first projection.  Essentially these functions perform a sequence of annual projections of
+abundance to determine an "equilibrium" age structure.
+
+The `ageStructureD` function generates an initial age structure deterministically assuming the
+number of recruits has remained exactly constant throughout history
+```{r}
+## Generate deterministic age structure
+N0 <- ageStructureD(MMsf,R=1)
+N0
+```
+
+The `ageStructureS` function generates an initial age structure stochastically given a vector of
+random recruits.  The vector of recruits must be at least as long as the number of age classes.
+```{r}
+## Random recruits
+R <- rlnorm(10,0,1)
+## Generate stochastic age structure
+N0 <- ageStructureS(R,Msf,M)
+N0
+```
+This generates a different age structure for each new random vector of recruits
+```{r}
+## Random recruits
+R <- rlnorm(10,0,1)
+## Generate stochastic age structure
+N0 <- ageStructureS(R,Msf,M)
+N0
+```
+
+
+## Virgin Spawning Stock Biomass
+
+The virgin spawning stock biomass $B_{0}$ (that is, the biomass of the spawning stock at equilibrium
+in the absence of fishing) is often used as a reference value against which to estimate depletion of
+the stock.
+
+The `spawningB0D` function estimates $B0$ by deterministically computing an initial age structure
+and projecting forward one year to compute spawning stock biomass.
+```{r}
+## Time points in the spawning period
+spawn <- 201:281
+## Virgin spawning stock abundance
+spawningB0D(gs=gs, ws=ws, MMs=M*Ms, spawn=spawn)
+```
+
+The `spawningB0S` function estimates $B0$ by simulating many initial age structures and projecting
+each forward one year to compute spawning stock biomass, then computing the median, mean and
+standard deviations of the simulated spawning stock biomasses.
+
+In this case we must provide a matrix of random recruit numbers - the number of columns determines
+the number of years to simulate and the number of rows determines the number of simulations.
+```{r}
+## Time points in the spawning period
+spawn <- 201:281
+## Matrix of 1000 random recruitment vectors
+R <- matrix( rlnorm(10000,0,1),nrow=1000,ncol=10)
+## Virgin spawning stock abundance
+spawningB0S(R, gs, ws, Ms, M, spawn)
+```
+
+Even with a 1000 simulations, the mean and median are poorly estimated.
+```{r}
+## Matrix of 1000 random recruitment vectors
+R <- matrix( rlnorm(10000,0,1),nrow=1000,ncol=10)
+## Virgin spawning stock abundance
+spawningB0S(R, gs, ws, Ms, M, spawn)
+```
+
+
+## Recruitment
+
+
+Grym implements several of methods for simulating the number of individuals recruited to the fishery
+in a year. These are methods are discussed in @Pavez21 and @DLMrecruit94.
+
+In principle, the number of recruits can be drawn from any suitable distribution.
+
+Here we focus on the methods used in the current krill assessment. @DLMrecruit94 proposed a
+"proportional recruitment" method that estimates both the annual scaling of natural mortality $M$
+and the recruitment variability given the mean and variance of the fraction of the population that
+are recruits, estimated from independent surveys. However, @Pavez21 showed that the method proposed
+by @DLMrecruit94 can be unreliable when recruitment variability is large, and proposed a more robust
+alternative and that method is used in the current krill assessment.
+
+The krill assessment pre-generates recruitment sequences for the projections, and re-uses the same
+recruitment sequences across different parameter scenarios to permit a more direct comparison of
+alternate scenarios.
+
+
+Let the proportion $R$ denote the fraction that a given reference age class is of the population
+of all age classes of the same age or older. 
+
+The method estimates distributional parameters from the mean and variance of $R$ observed in
+surveys.  The method generates a sequence of uniform random deviates, and applies a [probability
+integral transform](https://en.wikipedia.org/wiki/Probability_integral_transform) to transform these
+deviates to deviates from the desired distributional family.  These deviates are use to simulate the
+proportion of the reference class that would be seen in the surveys, and the parameters of the
+probability integral transform are adjusted to match the mean and variance observed in the
+surveys. Not every sequence of uniform deviates can be transformed to adequately match the observed
+mean and variance, and so in some cases the sequence must be discarded and a new sequence generated.
+
+The `prFit1` function takes as arguments
+
+* `qdist` - the quantile function of the target distribution parameterized in terms of the mean and
+  variance.
+* `Msf` - the final row of the unscaled integrated natural mortality
+* `mnR`, `vrR` - the target mean and variance of $R$ estimated from `n`
+  independent surveys
+* `M0`, `CV0` - initial estimates of the natural mortality and recruitment variability (coefficient
+  of variation)
+* `r` - the reference age class used to generate the proportion $R$.  
+
+The `prFit1` function first generates sequence of uniform deviates `us`. The `err` function uses the
+total mortalities `Msf`, to simulate the proportion `R` that would be seen in `n` surveys, and hence
+the sum of the squared error in the simulated mean and variance of `R`.  This function is used by
+`optim` to determine the parameters of the probability integral transform that give the best match
+to the observed mean and variance.  The function then checks the estimated parameters reproduce the
+mean and variance to within the desired tolerance, and if so return these parameters together with
+the mean and variance of $Q = R/(1-R)$ (which is needed for the subsequent simulation), otherwise
+the function returns `NULL`.
+
+```{r}
+prFit1 <- function(qdist,Msf,mnR,vrR,n,M0,CV0,r=1,plus=0,rstdunif=runif,tol=1.0E-4,max.M=10,max.CV=10) {
+  ## Generate deviates
+  us <- rstdunif(n*(1-r+length(Msf)+plus))
+  
+  err <- function(par) {
+    ## Compute survivals
+    S <- exp(-par[1]*Msf)
+    S <- cumprod(c(S[-length(S)],rep(S[length(S)],plus)))
+    s0 <- sum(S)
+    S <- c(1,S)
+    if(r>1) S <- S[r:length(S)]
+    
+    ## Mean and variance of Q
+    mnQ <- 1/s0
+    vrQ <- (par[2]*mnQ)^2
+    ## Simulate
+    A <- matrix(s0*qdist(us,mnQ,vrQ),length(S))
+    N <- S*A
+    R <- N[1,]/colSums(N)
+    (mnR-mean(R,na.rm=TRUE))^2+(sqrt(vrR)-sd(R,na.rm=TRUE))^2
+  }
+  
+  ## Fit the model
+  fit <- tryCatch(optim(c(M=M0,CV=CV0),fn=err,method="L-BFGS-B",lower=c(0,0),upper=c(max.M,max.CV)),
+                  error=function(.) NULL, warning=function(.) NULL)
+  
+  ## Recompute parameters
+  if(!is.null(fit) && fit$value < tol && fit$par[1] < max.M && fit$par[2] < max.CV) {
+    par <- unname(fit$par)
+    ## Compute survivals
+    S <- exp(-par[1]*Msf)
+    S <- cumprod(c(S[-length(S)],rep(S[length(S)],plus)))
+    s0 <- sum(S)
+    S <- c(1,S)
+    if(r>1) S <- S[r:length(S)]
+    
+    ## Mean and variance of Q
+    mnQ <- 1/s0
+    vrQ <- (par[2]*mnQ)^2
+    c(M=par[1],CV=par[2],mnQ=mnQ,vrQ=vrQ)  
+  }
+}
+```
+
+The `prFit` functions repeatedly calls `prFit1`, restarting with a new sequence of random deviates
+if `prFit1` fails.  If `max.iter` is not set, this function may never return.
+```{r}
+prFit <- function(qdist,Msf,mnR,vrR,n,M0,CV0,r=1,plus=0,rstdunif=runif,tol=1.0E-6,max.M=10,max.CV=10,max.iter=Inf) {
+  k <- 1
+  repeat {
+    k <- k+1
+    fit <- prFit1(qdist,Msf,mnR,vrR,n,M0,CV0,r,plus,rstdunif,tol,max.M,max.CV)
+    if(!is.null(fit) | k>max.iter) return(fit)
+  }
+}
+```
+
+To generate gamma distributed deviates, we must supply the Gamma quantile function parameterized in
+terms of the mean and variance of the Gamma distribution.
+```{r}
+## Gamma quantile function
+qGamma <- function(us,mn,vr) suppressWarnings(qgamma(us,mn^2/vr,mn/vr))
+```
+
+Then if the reference age class used to generate $R$ is the second age class (ie $R$ is the fraction
+that the second age class is of the population of age class 2 and older), and the values for mean
+and variance of $R$ estimated from 10 surveys are
+```{r}
+## Survey parameters
+R.class <- 2
+R.mean <- 0.2 
+R.var <- (0.04)^2
+R.nsurveys <- 10
+```
+
+Then we can estimate a suitable set of recruitment parameters with
+```{r}
+## Estimate distributional parameters
+M0 <- 0.1
+CV0 <- 0.2
+ps <- prFit(qGamma,Msf,R.mean,R.var,R.nsurveys,M0,CV0,R.class)
+ps
+```
+
+
+Given these parameters, a new recruitment sequence can be generated with
+```{r}
+## Function to generate recruits
+recGamma <- function(n,mn,vr) rgamma(n,mn^2/vr,mn/vr)/mn
+```
+
+This will generate random sequences of recruits with mean 1 and the correct coefficient of variation
+```{r}
+## Recruits are Gamma distributed
+r <- recGamma(10000,ps[3],ps[4])
+hist(r,50,xlab="Recruits")
+mean(r)
+sd(r)
+```
+
+
+If we base the simulations on correlated uniform deviates (generated with Gaussian [copulas](https://en.wikipedia.org/wiki/Copula_(probability_theory)))
+```{r}
+## Correlated uniform random deviates
+rcunif <- function(n,rho) {
+  if(rho==0)
+    runif(n)
+  else
+    pnorm(sqrt(1-rho^2)*as.vector(arima.sim(list(ar=rho),n)))
+} 
+## Recruitment function
+rcRec <- function(n,mn,vr,rho=0) {
+  qGamma(rcunif(n,rho),mn,vr)/mn
+}
+```
+
+
+```{r}
+## Estimate distributional parameters
+M0 <- 0.1
+CV0 <- 0.2
+rho <- 0.7
+ps <- prFit(qGamma,Msf,R.mean,R.var,R.nsurveys,M0,CV0,R.class,rstdunif=function(n) rcunif(n,rho))
+ps
+```
+
+The simulated numbers of recruits are still Gamma distributed
+```{r}
+## Recruitment is Gamma distributed
+hist(rcRec(10000,ps[3],ps[4],rho),50)
+```
+
+but numbers of recruits in successive years are correlated
+```{r}
+## Numbers of recruits are correlated
+lag.plot(rcRec(500,ps[3],ps[4],rho),lag=1)
+```
+
+## References
