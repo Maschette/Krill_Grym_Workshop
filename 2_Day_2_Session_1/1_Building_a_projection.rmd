@@ -1,0 +1,717 @@
+---
+title: "How to buid a projection"
+author: "Code by: Dale Maschette; additional notes by: "
+date: "08/01/2022"
+output: html_document
+---
+
+## Introduction
+The purpose of this document is to go step by step through the components of the projection function used within the krill assessment presented within WG-FSA-2021/39. 
+
+It has been written within Rmarkdown so that people can add their own note and make clarifications as we work through the code. 
+The most useful companion to this document is likely WG-FSA-2021/40 which talks about what each of the input parameters is, as well as guidance on how they should be calculated. 
+
+### Libraries
+
+Like always, the first thing  we normally do when starting a script is to load our libraries. 
+
+```{r libraries}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(remotes)
+library(purrr)
+library(furrr)
+library(readxl)
+library(Grym)
+```
+
+
+## Input parameters
+There are a large number of input parameters used within the Grym assessment for krill. For the purposes of this introduction it does not matter what they are, as such we will use the parameters from first scenario within WG-FSA-2021/39.
+
+```{r}
+#time step numbers and age classes
+nsteps = 365
+Ages = 1:7
+```
+
+
+```{r}
+#Interval sequences
+spawnI = 26:138
+monitorI = 93:107
+fishingI = 1:366
+```
+
+
+```{r}
+# Test values
+gamma=c(0,0.1)
+n.years=20
+```
+
+
+
+```{r}
+#Growth details
+t0 = 0
+K = 0.48
+Linf = 60
+f0 = 21/365
+f1 = 135/365
+```
+
+
+```{r}
+#Length/Weight Details
+a = 0.000002236
+b = 3.314
+```
+
+
+```{r}
+#Selectivity Parameters 
+sel50Min = 30
+sel50Max = 35
+selrange = 11
+```
+
+
+```{r}
+#Maturity parameters
+mat50Min = 32
+mat50Max = 36
+matrange = 6
+```
+
+
+```{r}
+#biomass log cv
+B0logsd = 0.361
+```
+
+```{r}
+#Recruitment Variables
+R.mean = 0.557
+R.var = 0.126^2
+R.class = 2
+R.nsurveys = 17
+```
+
+
+```{r}
+#recruitment parameters and quantile function
+Recs <- readRDS("./2_Day_2_Session_1/Rec_pars_48.1_0.557_0.126.rds")
+
+prRecruitPars = Recs$pars
+prRecruit = function(n,mn,vr) { 
+  q <- rbeta(n,mn*(mn*(1+mn)+vr)/vr,mn*(1+mn)/vr+2)
+  q/(1-q)/mn
+}
+```
+
+## Projection function
+
+### Initial setups 
+
+When we create the recruitment data elsewhere, we store it within the rds as a data frame to make it easier to plot and do some other stuff with. For the model though it is much quicker to do some operations with matrices instead of data frames. As such, we run a check to see if the recruitment data is a matrix, if it isn't we convert it to one. 
+
+```{r Recruit_matrix}
+if(!inherits(prRecruitPars, "matrix")) prRecruitPars <- as.matrix(prRecruitPars)
+```
+
+#### Time steps
+Create a sequence from 0-1 for each time step in the year. The value is the proportion of that time step in the year.
+
+```{r Days_in_a_year}
+#From the function
+Days <- seq(0,1,length=nsteps+1)
+
+#Check how it looks
+length(Days)
+head(Days)
+tail(Days)
+
+ggplot(data = data.frame(Days, step=0:nsteps+1), aes(x=step, y=Days))+
+  geom_point(shape=".")+
+  theme_bw()
+```
+
+At various points we need to know the proportion of an individual time step in the year (0.002739726 for daily timesteps). This is the amount that each time step increases by in `Days` above
+
+```{r}
+#From the function
+h <- 1/nsteps
+
+#Check how it looks
+h
+```
+
+#### Ages
+
+The model uses look up tables throughout all the projections. At the base of all of these is the matrix of ages, which is at a given time step what is the age in each of the age classes. 
+
+```{r}
+#From the function
+ages <- outer(Days,Ages,FUN="+")#Ages of each age class for every timestep
+
+#Check how it looks
+head(ages)
+tail(ages)
+
+ggplot(data = as.data.frame(cbind(1:366, ages)) %>% pivot_longer(V2:V8), aes(x=V1, y=value, col=name))+
+  labs(x="Timestep", y="Age", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_line()+
+  theme_bw()
+```
+
+#### Lengths
+
+Now that we know how old each age class will be at each time step in the year, we can use a length to age relationship, in this instance von Bertalanffy, to work out what length each age class should be at each time step. 
+
+```{r}
+#From the function
+ls <- vonBertalanffyRAL(ages,t0=t0,K=K,Linf=Linf,f0=f0,f1=f1)#length of each age class for every timestep
+
+#Check how it looks
+head(ls)
+tail(ls)
+
+ggplot(data = data.frame(step=1:366, ls) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
+  labs(x="Timestep", y="Length (mm)", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_line()+
+  theme_bw()
+
+```
+
+#### Weights 
+
+Following the above, now that we know the length at each time step we can then calculate the weight at each time step. This is done through the allometric length weight relationship $w=aL^b$, the `powerLW` function does this for you easily providing you have an estimate of a and b 
+
+```{r}
+#From the function
+ws <- powerLW(ls,a=a,b=b)
+
+#Check how it looks
+head(ws)
+tail(ws)
+
+ggplot(data = data.frame(step=1:366, ws) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
+  labs(x="Timestep", y="Length (mm)", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_line()+
+  theme_bw()
+```
+
+
+#### Mortalities (Natural)
+
+Similar to the above we need a set of matrices that dictate how much mortality is applied in each time step. 
+Ti start we indicate the proportion of mortality to apply for each timestep to each age class (if constant should all be one)
+```{r}
+#From the function
+## Constant intra-annual natural mortality
+ms <- matrix(1,nsteps+1,length(Ages))
+
+#Check how it looks
+head(ms)
+```
+
+In a similar manner we calculate the cumulative time step mortality.
+
+```{r}
+#From the function
+Ms <- ctrapz(ms,h)
+
+#Check how it looks
+head(Ms)
+
+ggplot(data = data.frame(step=1:366, Ms) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
+  labs(x="Timestep", y="Mortality", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_line()+facet_wrap(name~.)+
+  theme_bw()
+```
+
+We also calculate the final sum of mortality, or the total annual mortality, for each age class (if constant across ages, should all be one.)
+
+```{r}
+#From the function
+Msf <- final(Ms)
+
+#Check how it looks
+Msf
+```
+
+
+#### Mortalities (Fishing)
+
+Similar to the natural mortality, we need to identify the time steps which with have fishing mortality applied. Unlike the natural mortality which we did by age class, for the fishing mortality we calculate it as a set of vectors, which are applied to the appropriate age classes later in conjunction with the fishing selectivity. 
+
+
+The first thing we do is set up a year that has no fishing. Essentially a vector of 0s for each time step in the year. 
+
+```{r}
+#From the function
+fwy <- double(nsteps+1) #Sequence of 0s for the length of the year
+
+#Check how it looks
+ggplot()+
+  geom_line(aes(x=1:366, y=fwy))+
+  theme_bw()+labs(x="Timestep", y="Fishing Mortality")
+```
+
+We then outline the within year fishing pattern by changing the appropriate time steps to a 1. 
+
+```{r}
+#From the function
+fwy[fishingI] <- 1		#Set the fishing season increments to 1.
+# fwy[1:90] <- 1		#For display purposes only 
+
+#Check how it looks
+ggplot()+
+  geom_line(aes(x=1:366, y=fwy))+
+  theme_bw()+labs(x="Timestep", y="Fishing Mortality")
+```
+
+Finally average the fishing mortality so the average is 1 across all increments.
+
+```{r}
+#From the function
+fwy <- fwy/mean(fwy)  
+
+#Check how it looks
+ggplot()+
+  geom_line(aes(x=1:366, y=fwy))+
+  theme_bw()+labs(x="Timestep", y="Fishing Mortality")
+
+```
+
+### Run function
+
+The above section has set up the components of the population in terms of Age, length, weight, Natural and fishing mortality for each time step based off our initial input parameters.
+
+Now we explore, and break down, the run function that sits within the overall projection function. This is the the part within the `KrillProjection` function which actually builds the population and does the projections. 
+
+All of the below sits within a call of `function(run){}`
+
+When we look at the assessment code in the next session, you will see the code `Project<-KrillProjection(...)` this says here are my input parameters for the assessment, and creates a new function called `Project()`. This function actually executes the `run()` function below each time it is called. 
+
+To simulate this here, we need to imitate that call by telling it which run number we are on.
+
+```{r}
+run <- 1
+```
+
+
+Unlike the above which is broken into very small chunks, some of the parts of this function are in `for()` loops and are harder to break down. In these instances we will go through them twice, once looking looking at the loop overall, then again at each of the components in the `for()` loop. 
+
+#### Maturity 
+
+To begin with we calculate the length based maturity at each time step, another way to think of it is, given the length of each age class at each time step, what proportion of the age class is mature. The `rampOgive()` function takes a matrix (in this case our lengths by age class), a mid point of the o-give, and a width - which dictates the slope of the o-give.
+
+Because we don't know the exact length that 50% of krill are mature we have a range from our maturity estimates. To deal with this, in each run we use the `runif()` function to pick a random midpoint uniformly from within the range. 
+
+```{r}
+#From the function
+gs <- rampOgive(ls,runif(1,mat50Min,mat50Max),matrange) #Maturity ogive
+
+#Check how it looks
+head(gs)
+
+ggplot(data = data.frame(step=1:366, gs) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
+  labs(x="Timestep", y="Proportion Mature", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_line()+facet_wrap(name~.)+
+  theme_bw()
+
+```
+
+#### Selectivity
+
+We now do essentially the exact same thing using the selectivity o-give. 
+
+```{r}
+#From the function
+ss <- rampOgive(ls,runif(1,sel50Min,sel50Max),selrange)  #Selectivity ogive
+
+#Check how it looks
+head(ss)
+
+ggplot(data = data.frame(step=1:366, ss) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
+  labs(x="Timestep", y="Proportion Selected", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_line()+facet_wrap(name~.)+
+  theme_bw()
+
+```
+
+#### Fishing Mortality
+
+Now that we have a matrix of selectivity for each age class, we can apply the fishing mortality vectors we calculated above to that matrix 
+
+```{r}
+## Construct fishing mortalities from season and selectivity
+fs <- fwy*ss #Age + time step fishing mortality
+Fs <- ctrapz(fs,h) #Cumulative #Age + time step fishing mortality
+Fsf <- final(Fs) #Final yearly fishing mortality for each age class.
+
+#Check how it looks
+#fs
+ggplot(data = data.frame(step=1:366, fs) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
+  labs(x="Timestep", y="Proportion Selected", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_line()+facet_wrap(name~.)+
+  theme_bw()
+
+#Fs
+ggplot(data = data.frame(step=1:366, Fs) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
+  labs(x="Timestep", y="Proportion Selected", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_line()+facet_wrap(name~.)+
+  theme_bw()
+
+#Fsf
+Fsf
+```
+
+#### Recruitment inputs and Natural Mortality
+
+In order to make this assessment as efficient in speed as possible, we pre-generate the recruitment variable which we read in at the very top. For each run there are 4 initial values from the recruitment series that we read in: M, CV, mnQ and vrQ
+
+```{r}
+#From the function:
+## Extract recruitment parameters for this run
+ps <- unname(prRecruitPars[run,])
+
+#Check how it looks
+prRecruitPars[run,]
+```
+
+We then assign our yearly natural mortality from that proportional recruitment model run to be used in the projection. 
+
+```{r}
+#From the function:
+## Natural mortalities from proprtional recruitment model
+M <- ps[[1]] #Yearly M from bootstrapped recruitment
+
+#Check how it looks
+M
+```
+
+Once we have a yearly mortality from the proportional recruitment we can combine this with the cumulative time step mortality proportions that we calculated earlier. 
+
+```{r}
+#From the function:
+MMs <- M*Ms #Timestep cumulative mortality for each age class.
+
+#Check how it looks
+ggplot(data = data.frame(step=1:366, MMs) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
+  labs(x="Timestep", y="Proportion Mortality", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_line()+facet_wrap(name~.)+geom_hline(yintercept = 1)+
+  theme_bw()
+```
+
+#### Median Spawning biomass
+
+Part of the 
+
+```{r}
+#From the function:
+## Median spawning biomass estimated from 1000 samples
+R <- matrix(prRecruit(1000*length(Msf),ps[[3]],ps[[4]]),1000,length(Msf))
+ssb0 <- spawningB0S(R,gs,ws,Ms,M,spawn=spawnI)$median
+
+#Check how it looks
+head(R)
+
+ggplot(data = data.frame(step=1:1000, R) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
+  labs(x="Timestep", y="SSB0", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_line()+facet_wrap(name~.)+geom_hline(yintercept = 1)+
+  theme_bw()
+
+ssb0
+
+```
+
+
+
+```{r}
+#From the function:
+## Stochastic initial age structure in the absence of fishing
+N0 <- ageStructureS(prRecruit(length(Msf),ps[[3]],ps[[4]]),Msf,M)
+
+#Check how it looks
+N0
+```
+
+
+```{r}
+#From the function:
+## Recruitment series
+Rs <- prRecruit(n.years,ps[[3]],ps[[4]])
+
+#Check how it looks
+ggplot() + 
+  geom_point(aes(x=1:20, y=Rs)) +
+  labs(x="Year", y="Recruitment value", col="  Age \n Class") + 
+  theme_bw()
+```
+
+#### Setup summaries 
+In order to make the code more efficient we create an empty matrix of 0s which then get over written in subsequent code. This is because the way that R handles adding data to a data frame or matrix is to make a copy of the old data with the new data attached, which is far more memory intensive than replacing data within the object.  
+
+So as such, we make an empty matrix which has a row for each year of the projection, plus one for the initial state. We then multiply this by the number of gamma values we are testing. So in this scenario where we are doing a 20 year projection and are testing two gamma values we have 42 rows. We then have a column for each parameter we want to record in the final output 
+
+```{r}
+#From the function:
+## Matrix of annual summaries
+n <- (1+n.years)*length(gamma)
+df <- matrix(0,n,11)
+colnames(df) <- c("Year","Gamma","R","N","B","B0","SSN","SSB","SSB0","Catch","F")
+
+#Check how it looks
+head(df)
+```
+
+
+```{r}
+## Initial projection assuming no fishing
+pr0 <- project(ws,MMs,Nref=N0,yield=0)
+pr0$F <- pr0$Y <- 0
+```
+
+
+```{r}
+## Initial biomass in monitoring period + log Normal error
+b0 <- meanStock(pr0$B,period=monitorI)
+b0 <- rlnorm(1,log(b0)-B0logsd^2/2,B0logsd)
+k <- 0
+```
+
+
+```{r}
+## Project for each gamma ratio
+    for(g in gamma) {
+      ## Target catch
+      catch <- g*b0
+      ## Reset to virgin state
+      pr <- pr0
+      ssb <- spawningStock(pr$B,gs,spawnI)
+
+     
+       for(yr in 0:n.years) {
+        if(yr > 0) {
+          ## Recruitment depletion
+          r <- min(1,ssb/(0.2*ssb0))
+          ## Project over year
+          N0 <- advance(pr$N,r*Rs[yr])
+          pr <- projectC(ws,MMs,Fs,fs,catch,Nref=N0,yield=1,Fmax=1.5)
+          #if(pr$F==1.5) return(NULL)
+        }
+        ssb <- spawningStock(pr$B,gs,spawnI)
+
+        ## Collate annual summaries
+        df[k<-k+1,] <- c(yr,g,initial(pr$N)[1],sum(initial(pr$N)),sum(initial(pr$B)),b0,
+                         spawningStock(pr$N,gs,spawnI),ssb,ssb0,sum(pr$Y),pr$F)
+      }
+    }
+    data.frame(Run=run,M=M,df)
+
+```
+
+### Projection Function
+
+Now that we have explored each part of the projection function, the last part is to wrap it all up in a function and we have our stock assessment projections. 
+
+```{r}
+KrillProjection <- function(
+        nsteps, Ages, #time step numbers and age classes
+        spawnI,monitorI,fishingI, #Interval sequences
+        R.mean,R.var,R.class,R.nsurveys, #Recruitment Variables
+        t0,K,Linf,f0,f1, #Growth details
+        a, b, #Length/Weight Details
+        sel50Min,	sel50Max,	selrange, #Selectivity Parameters
+        mat50Min,	mat50Max,	matrange, #Maturity parameters
+        B0logsd, #biomass log cv
+        prRecruitPars,prRecruit, #recruitment parameters and quantile function
+        gamma=c(0,0.04,0.08,0.1),n.years=20 #Test details
+        ) {
+  if(!inherits(prRecruitPars, "matrix")) prRecruitPars <- as.matrix(prRecruitPars)
+  # Create a sequence from 0-1 for each time step. The value is the proportion of that timestep in the year.
+  Days <- seq(0,1,length=nsteps+1)
+  #The proportion of an individual time step in the year (0.002739726 for daily timesteps)
+  h <- 1/nsteps
+
+  ## Spawning and monitoring interval are defined as inputs into the function.
+  ## Should be as timesteps eg 76:138
+
+  ## Ages, length at age and weight at age
+  ages <- outer(Days,Ages,FUN="+")#Ages of each age class for every timestep
+  ls <- vonBertalanffyRAL(ages,t0=t0,K=K,Linf=Linf,f0=f0,f1=f1)#length of each age class for every timestep
+  ws <- powerLW(ls,a=a,b=b)#weight of each age class for every timestep
+
+  ## Constant intra-annual natural mortality
+  ms <- matrix(1,nsteps+1,length(Ages))#Proportion of mortality to apply for each timestep to each age class (if constant should all be one)
+  Ms <- ctrapz(ms,h)# Cumulative timestep proportional mortality
+  Msf <- final(Ms)#Sum of mortality for each age class (if constant across ages, should all be one.)
+
+  ## Within year fishing pattern - season is first 90 days
+  fwy <- double(nsteps+1) #Sequence of 0s for the length of the year
+  fwy[fishingI] <- 1		#Set the fishing season increments to 1.
+  fwy <- fwy/mean(fwy)  #Average the fishing mortality so the average is 1 across all increments.
+
+  #B0logsd <- 0.2
+
+  ## This function performs the a projection for each prescibed gamma.
+  function(run) {
+    ## Length based maturity and selectivity - ramp width is constant
+    ## but the midpoint is selected uniformly from a range.
+    gs <- rampOgive(ls,runif(1,mat50Min,mat50Max),matrange) #Maturity ogive
+    ss <- rampOgive(ls,runif(1,sel50Min,sel50Max),selrange)  #Selectivity ogive
+
+    ## Construct fishing mortalities from season and selectivity
+    fs <- fwy*ss #Age + time step fishing mortality
+    Fs <- ctrapz(fs,h) #Cumulative #Age + time step fishing mortality
+    Fsf <- final(Fs) #Final yearly fishing mortality for each age class.
+
+    ## Extract recruitment parameters for this run
+    ps <- unname(prRecruitPars[run,])
+
+    ## Natural mortalities from proprtional recruitment model
+    M <- ps[1] #Yearly M from bootstrapped recruitment
+    MMs <- M*Ms #Timestep cumulative mortality for each age class.
+
+    ## Median spawning biomass estimated from 1000 samples
+    R <- matrix(prRecruit(1000*length(Msf),ps[3],ps[4]),1000,length(Msf))
+    ssb0 <- spawningB0S(R,gs,ws,Ms,M,spawn=spawnI)$median
+    ## Stochastic initial age structure in the absence of fishing
+    N0 <- ageStructureS(prRecruit(length(Msf),ps[3],ps[4]),Msf,M)
+    ## Recruitment series
+    Rs <- prRecruit(n.years,ps[3],ps[4])
+    ## Matrix of annual summaries
+    n <- (1+n.years)*length(gamma)
+    df <- matrix(0,n,11)
+    colnames(df) <- c("Year","Gamma","R","N","B","B0","SSN","SSB","SSB0","Catch","F")
+    ## Initial projection assuming no fishing
+    pr0 <- project(ws,MMs,Nref=N0,yield=0)
+    pr0$F <- pr0$Y <- 0
+    ## Initial biomass in monitoring period + log Normal error
+    b0 <- meanStock(pr0$B,period=monitorI)
+    b0 <- rlnorm(1,log(b0)-B0logsd^2/2,B0logsd)
+
+    k <- 0
+    ## Project for each gamma ratio
+    for(g in gamma) {
+      ## Target catch
+      catch <- g*b0
+      ## Reset to virgin state
+      pr <- pr0
+      ssb <- spawningStock(pr$B,gs,spawnI)
+
+      for(yr in 0:n.years) {
+        if(yr > 0) {
+          ## Recruitment depletion
+          r <- min(1,ssb/(0.2*ssb0))
+          ## Project over year
+          N0 <- advance(pr$N,r*Rs[yr])
+          pr <- projectC(ws,MMs,Fs,fs,catch,Nref=N0,yield=1,Fmax=1.5)
+          #if(pr$F==1.5) return(NULL)
+        }
+        ssb <- spawningStock(pr$B,gs,spawnI)
+
+        ## Collate annual summaries
+        df[k<-k+1,] <- c(yr,g,initial(pr$N)[1],sum(initial(pr$N)),sum(initial(pr$B)),b0,
+                         spawningStock(pr$N,gs,spawnI),ssb,ssb0,sum(pr$Y),pr$F)
+      }
+    }
+    data.frame(Run=run,M=M,df)
+  }
+}
+
+```
+
+
+As mentioned earlier, once the projection function is built we give it our input variables and create a new function called `Project`. The `Project` function simply takes the input parameters and executes the `run` function that is within the `KrillProjection` function, creating the forward projection for each gamma we test. 
+
+```{r}
+Project <- KrillProjection(nsteps, Ages, spawnI,monitorI,fishingI, R.mean,R.var,R.class,R.nsurveys,t0,K,Linf,f0,f1,a, b, sel50Min,	sel50Max,	selrange, mat50Min,	mat50Max,	matrange, B0logsd, prRecruitPars,prRecruit, gamma ,n.years)
+```
+
+Each time we call it we get a different projection, so for our assessment we call this a lot of times and then summarise the output. 
+
+```{r}
+run1 <- Project(1)
+head(run1)
+
+run2 <- Project(2)
+head(run2)
+
+```
+
+Ideally we would do around 100,000 runs for an assessment. We may start at around 10,000 to find the value that gets us closest to the decision rules but then increase once we know roughly the gamma values we will test. 
+
+For today just because of time, we are going to run 100 just for speed. 
+
+```{r}
+Runs <- 100
+```
+
+There are three simplish ways we can do this. The first and most peoples go to is a `for()` loop, this however is incredibly slow. The second and slightly faster option is to use the `map_dfr()` function in the `purrr` package. The much faster option however is to use the`future_map_dfr()` in the `furrr` package. This uses the same function in the `purrr` package but combines it with the `future` package internally to allow you to parallel process the runs. 
+
+We can have a look at the three different options using the tictoc package to check the speed of each. 
+
+#### For loop
+
+So a classic `for` loop run will look something like below. 
+
+```{r for_loop_speed}
+df <- data.frame(NULL)
+
+tictoc::tic()
+for(i in 1:Runs){
+dfi <- Project(i)  
+df <- rbind(df, dfi)
+}
+tictoc::toc()
+
+```
+
+#### purrr map_dfr 
+
+The `map_dfr()` function in `purrr` takes two main options for our use case. The first being a vector to iterate over, the second being the function to use that vector. 
+
+```{r purrr_speed}
+tictoc::tic()
+df_48_1 <- map_dfr(1:Runs,Project)
+tictoc::toc()
+```
+
+#### purrr map_dfr 
+
+The `future_map_dfr()` function in `furrr` looks very similar to the `map_dfr()` function in `purrr`, but it has two extra options; one for setting the seed, the other for a progress bar. Additionally, either side of the `future_map_dfr()` function we have to outline our `plan()`
+
+The `plan()` function tells the `future` package how to process the functions and there are a few different options. We use `multisession` which means that its value is computed and resolved in parallel in another R session. There are other options such as multicore evaluation, which means that its value is computed and resolved in parallel in another process. Different computer setups and operating systems will get different performance out of each, but they will all be faster than the two options above. 
+
+We also need to tell the function how many cores, or 'workers', to use. If you are not doing anything else on your computer than I normally use n-1, if you are doing other work you may wish to use n-2, the `availableCores()` function looks at your machine and checks how many cores you have, so the code below is more flexible across users rather than having a specific number in there. For example my computer has 16 cores available, if I were to set the workers to 15 and most people ran it who only have 8 cores, their computers would have a bad time.
+
+```{r furrr_speed}
+tictoc::tic()
+plan(multisession, workers= availableCores()-1)
+df_48_1 <- future_map_dfr(1:Runs, Project, .options = furrr_options(seed = TRUE), .progress=T)
+plan(sequential)
+tictoc::toc()
+
+```
+
+As we can see from above, in this simple example the `purrr` option is slightly faster than the `for` loop whilst the `furrr` option is around half the speed (on my laptop). This doesn't seem like much on a 100 runs with two gamma values to test, but when you are testing 10-15 gamma values with 100,000 runs each the time savings become much more valuable. 
+
+```{r}
+head(df_48_1)
+```
+
+
+```{r}
+df_48_1$Run <- as.factor(df_48_1$Run)
+
+ggplot(data = df_48_1, aes(x=Year, y=SSB, col=Run))+
+  geom_line()+
+  facet_grid(Gamma~.)+
+  theme(legend.position = "none")
+```
+
