@@ -392,7 +392,7 @@ We then assign our yearly natural mortality from that proportional recruitment m
 ```{r}
 #From the function:
 ## Natural mortalities from proprtional recruitment model
-M <- ps[[1]] #Yearly M from bootstrapped recruitment
+M <- ps[1] #Yearly M from bootstrapped recruitment
 
 #Check how it looks
 M
@@ -422,7 +422,7 @@ Part of the assessment process is to calculate the pre-exploitation median spawn
 ```{r}
 #From the function:
 ## Median spawning biomass estimated from 1000 samples
-R <- matrix(prRecruit(1000*length(Msf),ps[[3]],ps[[4]]),1000,length(Msf))
+R <- matrix(prRecruit(1000*length(Msf),ps[3],ps[4]),1000,length(Msf))
 ssb0 <- spawningB0S(R,gs,ws,Ms,M,spawn=spawnI)$median
 
 #Check how it looks
@@ -443,7 +443,7 @@ We must provide an initial age structure - the number of individuals in each age
 ```{r}
 #From the function:
 ## Stochastic initial age structure in the absence of fishing
-N0 <- ageStructureS(prRecruit(length(Msf),ps[[3]],ps[[4]]),Msf,M)
+N0 <- ageStructureS(prRecruit(length(Msf),ps[3],ps[4]),Msf,M)
 
 #Check how it looks
 N0
@@ -462,7 +462,7 @@ In a similar manner to how we have set up the initial age structure for all age 
 ```{r}
 #From the function:
 ## Recruitment series
-Rs <- prRecruit(n.years,ps[[3]],ps[[4]])
+Rs <- prRecruit(n.years,ps[3],ps[4])
 
 #Check how it looks
 ggplot() + 
