@@ -4,6 +4,10 @@ author: "Code by: Dale Maschette; additional notes by: "
 date: "08/01/2022"
 output: html_document
 ---
+<style>
+body {
+text-align: justify}
+</style>
 
 ## Introduction
 The purpose of this document is to go step by step through the components of the projection function used within the krill assessment presented within WG-FSA-2021/39. 
@@ -409,7 +413,11 @@ ggplot(data = data.frame(step=1:366, MMs) %>% pivot_longer(X1:X7), aes(x=step, y
 
 #### Median Spawning biomass
 
-Part of the 
+Part of the assessment process is to calculate the pre-exploitation median spawning biomass based off 1000 samples. Since recruitment has been moved out of the projection function this is now the slowest part of the projection function. 
+
+*There are potential ways to speed this up, such as like the recruitment model, moving it out of the projection function and pre-calculating the ssb0 for each run. This however would be slightly more complicated as the ssb0 is linked to the the maturity curve, which varies in each run. One option may be to pre-generate a lot of values for R, say 1 million, and then sub-sample from these for each run to calculate the ssb0. This has a few benefits, currently in a model that does 100,000 runs we end up doing 1000 calculations in each of these runs to get an ssb0. This means we end up doing 100,000,000 calculations for ssb0 in the model. One potential issue is that 1000 calculations may not give a particularly accurate median ssb0. If we were to pre-generate the 100,000,000 R values (or even half that) we could randomly sample the 1000 values from these to calculate the ssb0, we could also however increase the number of samples used to calculate the ssb0 to 10,000 or 100,000 with not a particularly large amount of computing overhead to get a more accurate ssb0 to start the projections from.*
+
+*We could also move the  `spawningB0S()` call out of the main projection model but as mentioned this would be slightly more complicated as we would also need to move our maturity calculations from above out of the model and pre-generate each of these. It is not a super onerous task but would require some thought. One advantage of this is that you would have a record for each run which maturity estimate was used in the projections. *
 
 ```{r}
 #From the function:
@@ -421,15 +429,16 @@ ssb0 <- spawningB0S(R,gs,ws,Ms,M,spawn=spawnI)$median
 head(R)
 
 ggplot(data = data.frame(step=1:1000, R) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
-  labs(x="Timestep", y="SSB0", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
-  geom_line()+facet_wrap(name~.)+geom_hline(yintercept = 1)+
+  labs(x="Run", y="SSB0", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  geom_point(shape=19, size=0.4)+facet_wrap(name~.)+geom_hline(yintercept = ssb0, col="hotpink")+
   theme_bw()
 
 ssb0
 
 ```
 
-
+#### Initial age structure
+We must provide an initial age structure - the number of individuals in each age class at the start of the year. This is calculated using the mean and variance of Q, the final year class mortality, and the annual mortality to be applied. 
 
 ```{r}
 #From the function:
@@ -438,8 +447,17 @@ N0 <- ageStructureS(prRecruit(length(Msf),ps[[3]],ps[[4]]),Msf,M)
 
 #Check how it looks
 N0
+ggplot()+
+  geom_point(aes(x = 1:7, y = N0))+
+  geom_line(aes(x = 1:7, y = N0))+
+  labs(x = "Year Class", y = "Initial age structure")+
+  theme_bw()
+
 ```
 
+#### Projection recruitment. 
+
+In a similar manner to how we have set up the initial age structure for all age classes, as these age each year we need a new recruitment value for the youngest age class. To do this we create another series of recruitment values using the mean and variance of Q for each year in the projection. 
 
 ```{r}
 #From the function:
@@ -449,6 +467,7 @@ Rs <- prRecruit(n.years,ps[[3]],ps[[4]])
 #Check how it looks
 ggplot() + 
   geom_point(aes(x=1:20, y=Rs)) +
+  geom_line(aes(x=1:20, y=Rs)) +
   labs(x="Year", y="Recruitment value", col="  Age \n Class") + 
   theme_bw()
 ```
@@ -469,23 +488,58 @@ colnames(df) <- c("Year","Gamma","R","N","B","B0","SSN","SSB","SSB0","Catch","F"
 head(df)
 ```
 
+#### Initial projections
+
+To begin with, we do an initial projection for one year with no fishing to get our virgin starting point. This gives us the basis for testing each gamma value projecting forward, and a point to reset back to between gamma values. The project function returns a list with: Numbers (N), Biomass (B), Yield (Y), and Fishing Mortality (F), for each time step. 
 
 ```{r}
+#From the function:
 ## Initial projection assuming no fishing
 pr0 <- project(ws,MMs,Nref=N0,yield=0)
 pr0$F <- pr0$Y <- 0
+
+#Check how it looks
+str(pr0)
 ```
 
+#### Initial biomass
+
+Now that we have an initial years worth of time steps projection, we can calculate our initial biomass in the 'monitoring period'. The monitoring interval is the time of the year in which surveys are done to estimate B0. This is the time of the year in which a 'typical' survey is done. 
 
 ```{r}
 ## Initial biomass in monitoring period + log Normal error
+#From the function:
 b0 <- meanStock(pr0$B,period=monitorI)
+
+#Check how it looks
+b0
+```
+
+Whilst mathematically we can work out the exact number of krill in our simulated population, we cannot actually go out to the ocean and measure every krill. To simulate we have a parameter called B0logsd (which I plan to rename to FutureSurveyCV).
+
+The Grym uses B0logSD to add variability to the calculated B0 at the beginning of each run. This is to account for the sampling and methodological error in surveys during the forward projections.
+
+```{r}
+#From the function:
 b0 <- rlnorm(1,log(b0)-B0logsd^2/2,B0logsd)
-k <- 0
+
+#Check how it looks
+b0
 ```
 
 
+We also set our initial point in the data frame which is used to record the output of the `for` loop. 
+
 ```{r}
+k <- 0
+```
+
+#### Projection
+
+The final part of both the `run` function, and the higher level `KrillProjection` function, is the nested `for` loop which at the highest level loops through each gamma value to test, and then at the lower level - projects and records each year of the output. 
+
+```{r}
+#From the function:
 ## Project for each gamma ratio
     for(g in gamma) {
       ## Target catch
@@ -511,9 +565,97 @@ k <- 0
                          spawningStock(pr$N,gs,spawnI),ssb,ssb0,sum(pr$Y),pr$F)
       }
     }
-    data.frame(Run=run,M=M,df)
+#data.frame(Run=run,M=M,df)
+
+    
+#Check how it looks
+head(data.frame(Run=run,M=M,df))
+
 
 ```
+
+To look at the what each part of the `for` loop does in depth we will break it into its parts
+
+To begin with, we will look at the second gamma value `r gamma[2]`
+```{r}
+#for(g in gamma) {
+g <- gamma[2]
+```
+
+The way the model works is to project a population forward with a given catch. A gamma is the proportion of the population that can be removed, as such we multiply the gamma and the b0 together to get the target catch of the model. 
+```{r}
+#From the function: 
+## Target catch
+ catch <- g*b0
+
+#Check how it looks
+catch
+```
+
+Now that we know our target catch make a copy of our initial projection from above (pr0) and calculate the spawning stock biomass from this.
+
+```{r}
+#From the function:
+## Reset to virgin state
+      pr <- pr0
+      ssb <- spawningStock(pr$B,gs,spawnI)
+
+#Check how it looks
+str(pr)
+ssb
+```
+
+
+```{r}
+#for(yr in 0:n.years) {
+yr <- 1
+```
+
+If we are not in the first year of the assessment (yr == 0), than we check if the population is depleted, if it is than we reduce the level of recruitment. We then advance the population forward one year to get numbers for each age class, and then project the population forwards over the year
+
+```{r}
+#From the function:
+if(yr > 0) {
+          ## Recruitment depletion
+          r <- min(1,ssb/(0.2*ssb0)) #is the population depleted and need depleted recruitment?  
+          ## Project over year
+          N0 <- advance(pr$N,r*Rs[yr]) #Advance the population for one year calculating the number in each age class
+          pr <- projectC(ws,MMs,Fs,fs,catch,Nref=N0,yield=1,Fmax=1.5) #Project population for a year. 
+          #if(pr$F==1.5) return(NULL)
+        }
+
+#Check how it looks
+r
+
+N0
+
+str(pr)
+
+```
+
+Once projected we calculate an updated spawning stock biomass 
+
+```{r}
+#From the function:
+ssb <- spawningStock(pr$B,gs,spawnI)
+
+#Check how it looks
+ssb
+```
+
+Finally, we calculate and record the annual summary information that is combined across runs to evaluate against the decision rules.
+
+```{r}
+#From the function:
+## Collate annual summaries
+        #df[k<-k+1,] <- c(yr,g,initial(pr$N)[1],sum(initial(pr$N)),sum(initial(pr$B)),b0,
+        #                 spawningStock(pr$N,gs,spawnI),ssb,ssb0,sum(pr$Y),pr$F)
+#}
+#Check how it looks
+colnames(df); c(yr, g, initial(pr$N)[1], sum(initial(pr$N)), sum(initial(pr$B)), b0, spawningStock(pr$N,gs,spawnI), ssb, ssb0, sum(pr$Y), pr$F)
+```
+
+
 
 ### Projection Function
 
@@ -712,6 +854,7 @@ df_48_1$Run <- as.factor(df_48_1$Run)
 ggplot(data = df_48_1, aes(x=Year, y=SSB, col=Run))+
   geom_line()+
   facet_grid(Gamma~.)+
+  theme_bw()+
   theme(legend.position = "none")
 ```
 
