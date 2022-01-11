@@ -19,6 +19,7 @@ library(readxl)
 library(Grym)
 ```
 
+
 ```{r}
 KrillProjection <- function(
         nsteps, Ages, #time step numbers and age classes
