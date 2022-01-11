@@ -1,5 +1,5 @@
 ---
-title: "Grym Basics"
+title: "Grym Fundamentals"
 author: "S. Wotherspoon & D. Maschette"
 date: "January 2022"
 output: html_document
