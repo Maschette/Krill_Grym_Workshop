@@ -109,7 +109,7 @@ individuals that are age 3 at the first instant of the current year.
 
 ## Size
 
-To allow the model to translate between number of individuals and biomass, the analyst must specify
+To allow the model to translate between number of individuals and biomass, the user must specify
 the weight of an individual at each modelled age. This is done by providing a matrix `ws` that has
 the same dimensions as the `ages` matrix.  Again this matrix acts as a table that gives the weight
 of an individual for each age class and each time point in the year.
@@ -162,13 +162,13 @@ plot(ages,ws,type="l",xlab="Age",ylab="Weight")
 ```
 
 Strictly, to perform a projection the model only *requires* the matrix `ws` of weight at ages, and
-the analyst is free to compute this matrix by any means, the only requirement being that it has one
+the user is free to compute this matrix by any means, the only requirement being that it has one
 entry for each age class and each time point in the year.  The matrices `ages` and `ls` are
 constructed purely for convenience.
 
 ## Mortality
 
-The analyst must also provide several matrices that specify the fishing and natural mortality to be
+The user must also provide several matrices that specify the fishing and natural mortality to be
 used in the projection. 
 
 The model decomposes both the fishing and natural mortalities into inter-annual and intra-annual
@@ -561,13 +561,70 @@ N0 <- advance(pr$N,R)
 N0
 ```
 and these abundances are used to initialize the next projection.
-
-We may allow any of the model parameters to vary from year to year, and so it may be necessary to
-recalculate the input matrices before performing the next projection
 ```{r}
 ## Project forward second year
 pr <- projectC(ws, MMs, Fs, fs, C, N0)
 ```
+
+The repeated use of `project` or `projectC` will typically be the core of an assessment script.
+There are two important things to consider.
+
+
+
+Typically an assessment will project forward over multiple years with code something like the
+following
+```r
+
+### Setup code ### 
+for(yr in years) {
+
+  ## Project forward
+  pr <- project(...)
+
+  ### Collect results from this projection ###
+
+  ## Set age structure for next projection
+  N0 <- advance(pr$N,R)
+}
+```
+R uses a technique called "copy-on-write" to minimize memory usage (discussed in detail in
+(Advanced R)[https://adv-r.hadley.nz/names-values.html] and this 
+(blog post)[https://www.brodieg.com/2019/02/18/an-unofficial-reference-for-internal-inspect/]).
+Typically, this means that using `dataframe` to collect results from successive projections will
+lead to a great deal of unnecessary copying and is extremely inefficient, but using a matrix to
+collect results often will not force a copy and is much more efficient.  As a general guide
+
+* within loops, prefer collecting results in vectors, matrices or arrays, and 
+* where possible, calculated any derived quantities outside the loop.
+
+These issues can be very difficult to debug, particularly when working interactively in RStudio or
+the debugger, as both these tools monitor R's internal state and this can change the way copying
+occurs.
+
+Depending on the model assumptions, any or all of the model parameters may vary annually and so it
+may be necessary to recalculate the input matrices (tables) between calls to the project functions.
+The project functions have been designed to allow the user to minimize the amount of recalculation,
+but it is the users responsibility to manage this issue.
+
+So for example, we could avoid calculating many of the mortality matrices by replacing `projectC`
+with the function
+```{r}
+project1 <- function(ws,ss,M,C,N0,nsteps=365,nages=length(Ages)) {
+
+  h <- 1/nsteps
+  fwy <- double(length=nsteps+1)
+  fwy[31:200] <- 1
+  fwy <- fwy/trapz(fwy,h)
+  fs <- fwy*ss
+  Fs <- ctrapz(fs,h)
+  ms <- matrix(1,nsteps+1,nages)
+  MMs <- ctrapz(M*ms,h)
+  projectC(ws, MMs, Fs, fs, C, N0)
+}
+```
+But this would unnecessarily recompute the mortality matrices for every projection.
+
+
 
 ## Initial Age Structure
 
