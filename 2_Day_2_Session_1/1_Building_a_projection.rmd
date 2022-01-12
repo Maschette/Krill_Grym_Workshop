@@ -311,7 +311,7 @@ Unlike the above which is broken into very small chunks, some of the parts of th
 
 #### Maturity 
 
-To begin with we calculate the length based maturity at each time step, another way to think of it is, given the length of each age class at each time step, what proportion of the age class is mature. The `rampOgive()` function takes a matrix (in this case our lengths by age class), a mid point of the o-give, and a width - which dictates the slope of the o-give.
+To begin with we calculate the length based maturity at each time step, another way to think of it is, given the length of each age class at each time step, what proportion of the age class is mature. The `rampOgive()` function takes a matrix (in this case our lengths by age class), a mid point of the ogive, and a width - which dictates the slope of the ogive.
 
 Because we don't know the exact length that 50% of krill are mature we have a range from our maturity estimates. To deal with this, in each run we use the `runif()` function to pick a random midpoint uniformly from within the range. 
 
@@ -331,7 +331,7 @@ ggplot(data = data.frame(step=1:366, gs) %>% pivot_longer(X1:X7), aes(x=step, y=
 
 #### Selectivity
 
-We now do essentially the exact same thing using the selectivity o-give. 
+We now do essentially the exact same thing using the selectivity ogive. 
 
 ```{r}
 #From the function
@@ -515,9 +515,9 @@ b0 <- meanStock(pr0$B,period=monitorI)
 b0
 ```
 
-Whilst mathematically we can work out the exact number of krill in our simulated population, we cannot actually go out to the ocean and measure every krill. To simulate we have a parameter called B0logsd (which I plan to rename to FutureSurveyCV).
+The `meanStock` function above calculates the exact virgin biomass (for this projection) based off our parameters. In reality however, we must *estimate* the biomass with a survey. As we know based off the long conversations, the estimate we would obtain is inexact.  
 
-The Grym uses B0logSD to add variability to the calculated B0 at the beginning of each run. This is to account for the sampling and methodological error in surveys during the forward projections.
+To simulate the survey estimation process, we assume the survey estimates are log Normally distributed around the exact virgin biomass (calculated with `meanStock`).  The dispersion of this log Normal distribution reflects the precision of the survey, and is controlled by the parameter `B0logsd` (which I plan to rename to FutureSurveyCV in the future).
 
 ```{r}
 #From the function:
