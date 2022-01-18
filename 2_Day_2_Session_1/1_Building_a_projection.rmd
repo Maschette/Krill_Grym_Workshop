@@ -202,7 +202,7 @@ head(ws)
 tail(ws)
 
 ggplot(data = data.frame(step=1:366, ws) %>% pivot_longer(X1:X7), aes(x=step, y=value, col=name))+
-  labs(x="Timestep", y="Length (mm)", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
+  labs(x="Timestep", y="Weight (g)", col="  Age \n Class")+ scale_color_manual(labels = 1:7, values = 1:7)+
   geom_line()+
   theme_bw()
 ```
@@ -287,7 +287,7 @@ fwy <- fwy/mean(fwy)
 ggplot()+
   geom_line(aes(x=1:366, y=fwy))+
   theme_bw()+labs(x="Timestep", y="Fishing Mortality")
-
+head(fwy)
 ```
 
 ### Run function
@@ -812,6 +812,8 @@ df <- rbind(df, dfi)
 }
 tictoc::toc()
 
+head(df)
+
 ```
 
 #### purrr map_dfr 
@@ -824,7 +826,7 @@ df_48_1 <- map_dfr(1:Runs,Project)
 tictoc::toc()
 ```
 
-#### purrr map_dfr 
+#### furrr map_dfr 
 
 The `future_map_dfr()` function in `furrr` looks very similar to the `map_dfr()` function in `purrr`, but it has two extra options; one for setting the seed, the other for a progress bar. Additionally, either side of the `future_map_dfr()` function we have to outline our `plan()`
 

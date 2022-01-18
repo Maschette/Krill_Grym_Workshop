@@ -2,6 +2,7 @@ library(Grym)
 library(furrr)
 library(dplyr)
 library(ggplot2)
+
 options(dplyr.summarise.inform = FALSE)
 source('./Source/check_params.R')
 source('./Source/Projection_function.R')
@@ -34,7 +35,7 @@ pars<-readRDS(paste0("../2_Parameters/Setup_files/", scens[i]))
 
 recs<-readRDS(paste0("../2_Parameters/Recruitment_vectors/Rec_pars_",pars$Area,"_",pars$R.mean,"_",pars$R.sd,".rds"))
 
-check_params(pars, recs)
+#check_params(pars, recs)
 
 
 

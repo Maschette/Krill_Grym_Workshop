@@ -1,0 +1,187 @@
+---
+title: "Additional Notes"
+author: "S. Wotherspoon & D. Maschette"
+date: "Jan 2022"
+output: html_document
+bibliography: Ref.bib
+---
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Notes
+During the course of the workshop a number of questions were asked that required more time and detail than the workshop had available. This document aims to expand on a couple of these points in greater detail to provide users with guidance going forwards. 
+
+
+
+
+## Mortality Scaling
+
+A question was asked as to how the mortality estimated by the proportional recruitment model relates
+to the annual scaling of natural mortality.
+
+Within both Grym and the GYM, the total fishing mortality and the total natural mortality are both
+decomposed into an annual scaling and a within year component.  So the total fishing mortality is $F_{y} f(a,t,y)$,
+where $F_{y}$ is constant over any year but may vary from year to year, and $f(a,t,y)$ describes how fishing 
+mortality varies within a year and across age classes (but this pattern can vary from year to year).
+
+Typically, $f(a,t,y)$ will be defined by the fishing season and the gear selectivity - so $f(a,t,y)$
+should be zero when no fishing effort is expended, and $f(a,t,y)$ should be larger for individuals
+that are more heavily selected.  This pattern may vary from year to year because the distribution of
+fishing effort or the selectivity of the fleet may vary from year to year.
+
+Similarly, the total natural mortality is $M_{y} m(a,t,y)$, where $M_{y}$ is constant over any
+year but may vary from year to year and $m(a,t,y)$ describes how natural mortality varies within a
+year and across age classes.
+
+The mortalities were decomposed in this way to make it easier to allow overall mortality to vary
+randomly from year to year even though the within year pattern may not vary.  But this decomposition
+is simply a convenience, for the calculations, it is the total mortalities $F_{y} f(a,t,y)$ and
+$M_{y} m(a,t,y)$ that are important.
+
+This raises an issue with the scaling of $f(a,t,y)$ and $m(a,t,y)$.  Given a choice of $M_{y}$ and
+$m(a,t,y)$, we could multiply $M_{y}$ by $k$ and divide $m(a,t,y)$ by the same factor, and because
+only the product $M_{y} m(a,t,y) =$ $(k M_{y}) (m(a,t,y)/k)$ is important, this rescaling would not
+impact the projection.  Similarly, multiply $F_{y}$ by $k$ and divide $f(a,t,y)$ by $k$ and not
+impact the projection.
+
+
+In the examples we have discussed, we have chosen the scaling of 
+
+* $m(a,t,y)$ so that the cumulative unscaled mortality $\int_{y}^{y+1} m(a,\tau,y) d \tau = 1$ in
+  each age class,
+
+* $f(a,t,y)$ so that the cumulative unscaled mortality $\int_{y}^{y+1} f(a,\tau,y) d \tau = 1$ for
+  age classes that are fully selected.
+
+If the length of the fishing season were to change from year to year, this choice of scaling for
+$f(a,t,y)$ may not be ideal.  For example, if the length of the fishing season were to double from
+year 1 to year 2 but the actual effort expended per day were to remain the same, then there is a
+very real sense in which the *total* fishing effort expended in the year has doubled.  If we choose
+$\int_{y}^{y+1} f(a,\tau,y) d \tau = 1$ in both years, then $F_{y}$ will double in the secod year to
+reflect the increase in *total* effort in the second year.  If instead we choose $\int_{y}^{y+1} f(a,\tau,y) d \tau = 2$ 
+in the second year, then $F_{y}$ will not change from year 1 to year 2 - the
+"doubling" of effort has been captured in $f(a,\tau,y)$.  For the projection, it doesn't actually
+matter which of these two alternatives is chosen, the projection remains the same in both cases,
+only the interpretation of $F_{y}$ changes. Both of interpretations are "reasonable", and depending
+on the intention of the analysis, one may be a more appropriate choice than the other.
+
+
+For natural mortality, typically $m(a,\tau,y)=1$ and so $\int_{y}^{y+1} m(a,\tau,y) d \tau =1$.
+This is is quite a natural choice as it means that $M_{y}$ then reflects the total annual
+mortality in each age class.
+
+The proportional recruitment model originally described in @DLMrecruit94 assumes that natural
+mortality is constant across years and age classes.  Some of the models described in @Pavez21 relax
+this assumption a little, but still assume that natural mortality does not vary from year to year.
+
+
+So to return to the question, the `prFit` function estimates $M_{y}$, assuming that $M_{y}$ does not
+vary.  This estimate is returned as `M`, and the scaling of `M` is determined by the scaling of
+`Msf`.  So as long as the `Msf` passed to `prFit` is consistent with the unscaled mortalities `ms`
+and `Ms` used in any subsequent projection, the projections will be correct. However, some care
+should be taken when reporting `M` as the scaling of this value depends on the scaling chosen when
+defining `ms`.
+
+
+
+## Projection function
+
+The projection function is structured to performs projections in a number of "stages", and it is
+important to understand what inputs vary where.
+
+Broadly, the projections function takes the form
+```r
+KrillProjection <- function(...) {
+
+  ##
+  ## Stage 1 - values constant across runs and gammas
+  ##
+
+  ## The function that performs the projections
+  function(run) {
+
+
+    ##
+    ## Stage 2 - values vary between runs but constant across gammas 
+    ##
+
+    for(g in gamma) {
+      
+      ##
+      ## Stage 3 - values vary for each run/gamma
+      ##
+
+    }
+  }
+}
+``` 
+
+Stage 1 performs some initial computation to setup parameters that will remain constant across all
+runs and gamma values tests.  For example, the number of time steps in a year, the weight at length and
+length at age relationships remain constant across all runs.
+
+The `KrillProjection` function itself does not actually perform any projections, it just sets up all
+the major parameters, and returns a second function that performs a single projection.  We can then
+perform as many projections are required by calling this second function again and again.
+
+Stage 2 occurs within this second function, and this stage computes parameters specific to this
+particular run, but common to the different gamma values.  So for example, any computation relating
+to the virgin state of the stock should occur here, as those values should be independent of any
+fishing.  
+
+In stage 3, we perform any computations that require the target catch (equivalently gamma) to be
+known.
+
+Ideally we wish to set up a random scenario (in stage 2), and then compute outcomes for that sams
+scenario for a range of gamma values (in stage 3).  That is, we hold the scenario fixed, and
+re-project the same scenario for each gamma value, then repeat this process for a new random
+scenario.  In the krill assessment, the selectivity and maturity vary randomly.  Both these
+quantities are calculated in stage 2 so that they vary between runs.  But within any single run, the
+same selectivity and maturity relations are used for each gamma that is tested.  This means that
+within a run, any differences observed can be uniquely attributed to the change in gamma value,
+rather than random fluctuations in selectivity and maturity.
+
+For those with a background in experimental design, this is process in equivalent to blocking.  The
+runs are blocks , and the choice of gamma value is the treatment.
+
+
+## Spawning B0
+
+
+There was a question about scaling the result of `spawningB0S`.  Both this function, and the
+`ageStructureS` start from a population with zero individuals, and then simulate the effect of many
+years of recruitment to determine a "possible" virgin age structure.
+
+The `ageStructureS` function computes an initial age structure for one simulated population.  If `R`
+is a vector of random annual recruitments, then `ageStructureS` is essentially equivalent to
+projecting the population forward using these recruitments and taking the final abundance
+```r
+## Empty population
+N0 <- rep(0,length(Ages))
+## Simulate forward many years
+for(y in 1:length(R)) {
+  pr <- project(ws,MMs,Nref=N0)
+  N0 <- advance(pr$N,rec[y])
+}
+## Take final abundance
+final(pr$N)
+```
+except that `ageStructureS` is much more efficient because it only calculates the abundances it
+explicitly requires.
+
+The `spawningB0S` function is similar except it calculates the spawning biomass for many simulated
+populations and then computes the mean, median and variance of the simulated spawning biomasses.
+
+
+So as long as the same natural mortalities and recruitment distributions are used in `spawningB0S` and
+`ageStructureS` as are used in the projection, the initial age structure and spawning biomasses will
+be correctly scaled.
+
+
+## References
